@@ -20,8 +20,8 @@ from random import randint
 import seaborn as sns  # 추가
 
 # Google API 인증 파일 경로 (실제 경로로 업데이트 필요)
-GOOGLE_APPLICATION_CREDENTIALS = "C:\\Users\\user\\Desktop\\연구\\국가별 및 신문사별 감정 강도 비교 연구\\코딩\\comparative-sentiment-analysis-c0b363950560.json"
-HUGGINGFACE_API_KEY = "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"
+GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+HUGGINGFACE_API_KEY = os.environ.get("HUGGINGFACE_API_KEY", "")
 
 # 필요한 NLTK 데이터 다운로드
 try:
@@ -265,8 +265,13 @@ def get_sentistrength_sentiment(text):
 def get_google_sentiment(text):
     """Google Natural Language API를 사용하여 감정 점수 분석"""
     try:
-        # Google Cloud 인증 설정
+        # 환경 변수 설정
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = GOOGLE_APPLICATION_CREDENTIALS
+        
+        # 인증 파일이 비어있으면 건너뜀
+        if not GOOGLE_APPLICATION_CREDENTIALS:
+            print("Google API 인증 정보가 설정되지 않았습니다.")
+            return 0
         
         # 클라이언트 초기화
         client = language_v1.LanguageServiceClient()
