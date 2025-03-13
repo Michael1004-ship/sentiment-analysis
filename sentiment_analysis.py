@@ -337,25 +337,34 @@ def normalize_google_score(score):
 # 최종 감정 점수 계산 함수
 
 def calculate_final_sentiment(vader_score, google_score, huggingface_score, df=None):
-    """각 도구의 정규화된 감정 점수를 가중 평균하여 최종 감정 점수 계산 (Hugging Face 조정 포함)"""
+    """각 도구의 정규화된 감정 점수를 가중 평균하여 최종 감정 점수 계산 (극단값 조정 포함)"""
     
-    # Z-score를 활용하여 Hugging Face 점수가 극단적인지 판단
-    if df is not None:
-        df["huggingface_score_zscore"] = zscore(df["huggingface_score"])
-        huggingface_zscore = df["huggingface_score_zscore"].iloc[-1]  # 마지막 데이터 기준
-    
-        # Z-score가 ±2.0 이상이면 가중치 낮춤
-        if abs(huggingface_zscore) > 2.0:
-            huggingface_weight = 0.1  # 기존 0.2 → 0.1로 축소
-            print(f"Hugging Face 감정 점수가 극단적으로 평가됨 (Z-score: {huggingface_zscore:.2f}) → 가중치 조정")
-        else:
-            huggingface_weight = 0.2  # 기본 가중치 유지
-    else:
-        huggingface_weight = 0.2  # 기본 가중치 유지
-
-    # 다른 모델의 가중치는 그대로 유지
+    # 기본 가중치 설정
     vader_weight = 0.4
     google_weight = 0.4
+    huggingface_weight = 0.2
+
+    # Z-score를 활용하여 감정 분석 도구의 점수 극단성 판단
+    if df is not None:
+        df = calculate_z_scores(df)  # Z-score 계산
+        huggingface_zscore = df["huggingface_score_zscore"].iloc[-1]  # 마지막 데이터 기준
+        vader_zscore = df["vader_score_zscore"].iloc[-1]
+        google_zscore = df["google_score_zscore"].iloc[-1]
+
+        # Hugging Face 감정 점수의 극단성 확인
+        if abs(huggingface_zscore) > 2.0:
+            huggingface_weight = 0.1
+            print(f"Hugging Face 감정 점수 조정 (Z-score: {huggingface_zscore:.2f}) → 가중치 {huggingface_weight}")
+
+        # VADER 감정 점수의 극단성 확인
+        if abs(vader_zscore) > 2.0:
+            vader_weight = 0.3
+            print(f"VADER 감정 점수 조정 (Z-score: {vader_zscore:.2f}) → 가중치 {vader_weight}")
+
+        # Google NLP 감정 점수의 극단성 확인
+        if abs(google_zscore) > 2.0:
+            google_weight = 0.3
+            print(f"Google 감정 점수 조정 (Z-score: {google_zscore:.2f}) → 가중치 {google_weight}")
 
     # 정규화된 감정 점수 계산
     normalized_vader = normalize_vader_score(vader_score)
@@ -365,7 +374,7 @@ def calculate_final_sentiment(vader_score, google_score, huggingface_score, df=N
     final_score = (vader_weight * normalized_vader + 
                    google_weight * normalized_google + 
                    huggingface_weight * huggingface_score)
-    
+
     return final_score
 
 # 기사 감정 분석 함수
