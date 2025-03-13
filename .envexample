@@ -1,0 +1,2 @@
+GOOGLE_APPLICATION_CREDENTIALS = "your_google_application_credentials"
+HUGGINGFACE_API_KEY = "your_huggingface_api_key"

@@ -172,3 +172,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# API 키 및 인증 파일
+comparative-sentiment-analysis-c0b363950560.json
+
+# 바이너리 및 데이터 파일
+SentiStrength.jar
+SentiStrengthDataEnglishOctober2019/
+
+# 결과 파일 (선택적)
+*.png
+*.csv
+결과/
