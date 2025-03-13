@@ -18,6 +18,8 @@ import time
 import re
 from random import randint
 import seaborn as sns  # 추가
+import numpy as np
+from scipy.stats import zscore
 
 # Google API 인증 파일 경로 (실제 경로로 업데이트 필요)
 GOOGLE_APPLICATION_CREDENTIALS = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
@@ -334,112 +336,96 @@ def normalize_google_score(score):
 
 # 최종 감정 점수 계산 함수
 
-def calculate_final_sentiment(vader_score, sentistrength_positive, sentistrength_negative, google_score, huggingface_score):
-    """각 도구의 정규화된 점수를 가중 평균하여 최종 감정 점수 계산"""
-    # 각 점수 정규화
+def calculate_final_sentiment(vader_score, google_score, huggingface_score, df=None):
+    """각 도구의 정규화된 감정 점수를 가중 평균하여 최종 감정 점수 계산 (Hugging Face 조정 포함)"""
+    
+    # Z-score를 활용하여 Hugging Face 점수가 극단적인지 판단
+    if df is not None:
+        df["huggingface_score_zscore"] = zscore(df["huggingface_score"])
+        huggingface_zscore = df["huggingface_score_zscore"].iloc[-1]  # 마지막 데이터 기준
+    
+        # Z-score가 ±2.0 이상이면 가중치 낮춤
+        if abs(huggingface_zscore) > 2.0:
+            huggingface_weight = 0.1  # 기존 0.2 → 0.1로 축소
+            print(f"Hugging Face 감정 점수가 극단적으로 평가됨 (Z-score: {huggingface_zscore:.2f}) → 가중치 조정")
+        else:
+            huggingface_weight = 0.2  # 기본 가중치 유지
+    else:
+        huggingface_weight = 0.2  # 기본 가중치 유지
+
+    # 다른 모델의 가중치는 그대로 유지
+    vader_weight = 0.4
+    google_weight = 0.4
+
+    # 정규화된 감정 점수 계산
     normalized_vader = normalize_vader_score(vader_score)
-    normalized_sentistrength = normalize_sentistrength_score(sentistrength_positive, sentistrength_negative)
     normalized_google = normalize_google_score(google_score)
-    
-    # 정규화된 점수 출력
-    print(f"정규화된 VADER 점수: {normalized_vader:.4f}")
-    print(f"정규화된 SentiStrength 점수: {normalized_sentistrength:.4f}")
-    print(f"정규화된 Google API 점수: {normalized_google:.4f}")
-    print(f"정규화된 Hugging Face 점수: {huggingface_score:.4f}")
-    
-    # 극단적인 점수가 있을 경우 가중치 조정
-    # Hugging Face가 0.1 미만이거나 0.9 초과일 경우 가중치 낮춤
-    if huggingface_score < 0.1 or huggingface_score > 0.9:
-        vader_weight = 0.3
-        sentistrength_weight = 0.4
-        google_weight = 0.3
-        huggingface_weight = 0.0  # 가중치 제거
-        print("Hugging Face 점수가 극단적이어서 계산에서 제외합니다.")
-    else:
-        vader_weight = 0.25
-        sentistrength_weight = 0.3
-        google_weight = 0.25
-        huggingface_weight = 0.2
-        
-    # 가중 평균 계산 (Hugging Face 제외 가능성 있음)
-    if huggingface_weight > 0:
-        final_score = (vader_weight * normalized_vader + 
-                     sentistrength_weight * normalized_sentistrength + 
-                     google_weight * normalized_google + 
-                     huggingface_weight * huggingface_score)
-    else:
-        # 합계가 1이 되도록 정규화
-        total_weight = vader_weight + sentistrength_weight + google_weight
-        final_score = (vader_weight * normalized_vader + 
-                     sentistrength_weight * normalized_sentistrength + 
-                     google_weight * normalized_google) / total_weight
+
+    # 최종 감정 점수 계산
+    final_score = (vader_weight * normalized_vader + 
+                   google_weight * normalized_google + 
+                   huggingface_weight * huggingface_score)
     
     return final_score
 
 # 기사 감정 분석 함수
 
-def analyze_article_sentiment(article, country, search_keyword=None):
-    """기사 감정 분석 수행"""
-    title = article['title']
-    content = article['content']
-    source = article['source']
-    text = f"{title}. {content}"  # 제목과 내용을 합쳐서 분석
+def calculate_z_scores(df):
+    """감정 점수 및 감정 강도를 Z-score로 변환"""
+    z_score_df = df.copy()
     
+    # 감정 점수 Z-score 적용
+    z_score_df["final_sentiment_zscore"] = zscore(df["final_sentiment_score"])
+    z_score_df["sentiment_intensity_zscore"] = zscore(df["sentiment_intensity_score"])
+    
+    # 감정 분석 도구별 Z-score 적용
+    tools = ["vader_score", "google_score", "huggingface_score"]
+    for tool in tools:
+        z_score_df[f"{tool}_zscore"] = zscore(df[tool])
+
+    return z_score_df
+
+def analyze_article_sentiment(article, country, search_keyword=None, df=None):
+    """기사 감정 분석 수행 및 Hugging Face 점수 조정 포함"""
+    title = article["title"]
+    content = article["content"]
+    source = article["source"]
+    text = f"{title}. {content}"
+
     print(f"\n입력 뉴스 기사: '{title}'")
     print(f"출처: {source} (국가: {country})")
     print(f"내용 일부: {content[:100]}...\n")
-    
-    # 각 도구를 사용하여 감정 점수 분석
+
+    # 감정 분석 도구 적용
     vader_score = get_vader_sentiment(text)
-    sentistrength_pos, sentistrength_neg = get_sentistrength_sentiment(text)
     google_score = get_google_sentiment(text)
     huggingface_score = get_huggingface_sentiment(text)
-    
-    # 최종 감정 점수 계산
-    final_score = calculate_final_sentiment(
-        vader_score, 
-        sentistrength_pos, 
-        sentistrength_neg, 
-        google_score, 
-        huggingface_score
-    )
+    sentistrength_pos, sentistrength_neg = get_sentistrength_sentiment(text)
+
+    # 감정 점수 및 감정 강도 계산 (Hugging Face 가중치 조정 포함)
+    final_sentiment_score = calculate_final_sentiment(vader_score, google_score, huggingface_score, df)
+    sentiment_intensity_score = normalize_sentistrength_score(sentistrength_pos, sentistrength_neg)
     
     # 결과 출력
     print("\n===== 감정 분석 결과 =====")
     print(f"VADER 감정 점수: {vader_score} (정규화: {normalize_vader_score(vader_score):.4f})")
-    print(f"SentiStrength 점수: 긍정={sentistrength_pos}, 부정={sentistrength_neg} (정규화: {normalize_sentistrength_score(sentistrength_pos, sentistrength_neg):.4f})")
     print(f"Google API 감정 점수: {google_score} (정규화: {normalize_google_score(google_score):.4f})")
     print(f"Hugging Face 감정 점수: {huggingface_score:.4f}")
-    print(f"최종 감정 점수: {final_score:.4f}")
-    
-    # 감정 해석
-    if final_score > 0.65:
-        sentiment = "매우 긍정적"
-    elif final_score > 0.55:
-        sentiment = "긍정적"
-    elif final_score > 0.45:
-        sentiment = "중립적"
-    elif final_score > 0.35:
-        sentiment = "부정적"
-    else:
-        sentiment = "매우 부정적"
-    
-    print(f"감정 해석: {sentiment}")
-    
-    # 결과 반환
+    print(f"최종 감정 점수: {final_sentiment_score:.4f}")
+    print(f"SentiStrength 감정 강도: 긍정={sentistrength_pos}, 부정={sentistrength_neg} (정규화: {sentiment_intensity_score:.4f})")
+
     return {
-        'title': title,
-        'source': source,
-        'country': country,
-        'bias': get_source_bias(source),
-        'search_keyword': search_keyword,
-        'final_score': final_score,
-        'vader_score': normalize_vader_score(vader_score),
-        'sentistrength_score': normalize_sentistrength_score(sentistrength_pos, sentistrength_neg),
-        'google_score': normalize_google_score(google_score),
-        'huggingface_score': huggingface_score,
-        'sentiment': sentiment,
-        'url': article.get('url', '')
+        "title": title,
+        "source": source,
+        "country": country,
+        "bias": get_source_bias(source),
+        "search_keyword": search_keyword,
+        "final_sentiment_score": final_sentiment_score,
+        "sentiment_intensity_score": sentiment_intensity_score,
+        "vader_score": normalize_vader_score(vader_score),
+        "google_score": normalize_google_score(google_score),
+        "huggingface_score": huggingface_score,
+        "url": article.get("url", ""),
     }
 
 def get_source_bias(source):
@@ -490,7 +476,7 @@ def compare_news_sources(keywords, articles_per_source=3):
                 
                 if result:
                     results.append(result)
-                    debug_print(f"✅ 분석 완료: {result['title']} (점수: {result['final_score']})")
+                    debug_print(f"✅ 분석 완료: {result['title']} (점수: {result['final_sentiment_score']})")
     
     return results
 
@@ -534,7 +520,7 @@ def sample_article_review(df, sample_size=5):
         print(f"\nArticle Title: {row['title']}")
         print(f"Source: {row['source']} (Country: {row['country']})")
         print(f"Search Keyword: {row.get('search_keyword', 'No info')}")
-        print(f"Final Sentiment Score: {row['final_score']:.4f} ({row['sentiment']})")
+        print(f"Final Sentiment Score: {row['final_sentiment_score']:.4f} ({row['sentiment']})")
         print(f"Tool Scores: VADER={row['vader_score']:.2f}, SentiStrength={row['sentistrength_score']:.2f}, " +
               f"Google={row['google_score']:.2f}, HuggingFace={row['huggingface_score']:.2f}")
         print(f"URL: {row.get('url', 'No info')}")
@@ -543,7 +529,7 @@ def sample_article_review(df, sample_size=5):
 def visualize_sentiment_by_source(df, result_folder, timestamp):
     """Compare sentiment score distribution by news source"""
     plt.figure(figsize=(12, 6))
-    ax = sns.boxplot(x='source', y='final_score', data=df)
+    ax = sns.boxplot(x='source', y='final_sentiment_score', data=df)
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
     plt.title('Sentiment Score Distribution by News Source')
     plt.ylabel('Sentiment Score (0-1)')
@@ -583,7 +569,7 @@ def analyze_bias_influence(df, result_folder, timestamp):
     plt.figure(figsize=(12, 6))
     
     # Political bias sentiment distribution
-    sns.boxplot(x='bias', y='final_score', data=df)
+    sns.boxplot(x='bias', y='final_sentiment_score', data=df)
     plt.title('Sentiment Score Distribution by Political Bias')
     plt.xlabel('Political Bias')
     plt.ylabel('Sentiment Score (0-1)')
@@ -610,6 +596,30 @@ def analyze_bias_influence(df, result_folder, timestamp):
     plt.savefig(os.path.join(result_folder, f'bias_by_tool_{timestamp}.png'))
     print(f"📊 Political bias influence graphs saved.")
 
+def visualize_sentiment_intensity(df, result_folder, timestamp):
+    """감정 강도(SentiStrength)만을 기준으로 시각화"""
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(x='bias', y='sentiment_intensity_score', data=df)
+    plt.title('Sentiment Intensity by Political Bias')
+    plt.ylabel('Sentiment Intensity Score (0-1)')
+    plt.ylim(0, 1)
+    plt.axhline(y=0.5, color='red', linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(os.path.join(result_folder, f'sentiment_intensity_{timestamp}.png'))
+    print(f"📊 Sentiment intensity graph saved.")
+    
+    # 신문사별 감정 강도 시각화도 추가
+    plt.figure(figsize=(12, 6))
+    ax = sns.boxplot(x='source', y='sentiment_intensity_score', data=df)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+    plt.title('Sentiment Intensity Distribution by News Source')
+    plt.ylabel('Sentiment Intensity Score (0-1)')
+    plt.ylim(0, 1)
+    plt.axhline(y=0.5, color='red', linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(os.path.join(result_folder, f'source_intensity_boxplot_{timestamp}.png'))
+    print(f"📊 News source intensity distribution graph saved.")
+
 def evaluate_sentiment_reliability(df, result_folder, timestamp):
     """Comprehensive evaluation of sentiment analysis reliability"""
     print("\n=== Starting Sentiment Analysis Reliability Evaluation ===")
@@ -626,112 +636,175 @@ def evaluate_sentiment_reliability(df, result_folder, timestamp):
     # 4. Political bias influence analysis
     analyze_bias_influence(df, result_folder, timestamp)
     
+    # 5. Sentiment intensity analysis (새로 추가)
+    visualize_sentiment_intensity(df, result_folder, timestamp)
+    
     print("\n=== Sentiment Analysis Reliability Evaluation Complete ===")
     print(f"All evaluation graphs have been saved to {result_folder} folder.")
 
+def calculate_statistics(df):
+    """감정 점수 및 감정 강도의 평균, 분산, 표준편차 계산"""
+    stats = {}
+
+    # 전체 기사에 대한 종합 통계
+    stats["전체_감정점수_평균"] = df["final_sentiment_score"].mean()
+    stats["전체_감정점수_분산"] = df["final_sentiment_score"].var()
+    stats["전체_감정점수_표준편차"] = df["final_sentiment_score"].std()
+
+    stats["전체_감정강도_평균"] = df["sentiment_intensity_score"].mean()
+    stats["전체_감정강도_분산"] = df["sentiment_intensity_score"].var()
+    stats["전체_감정강도_표준편차"] = df["sentiment_intensity_score"].std()
+
+    # 국가별 통계
+    country_stats = df.groupby("country").agg(
+        감정점수_평균=("final_sentiment_score", "mean"),
+        감정점수_분산=("final_sentiment_score", "var"),
+        감정점수_표준편차=("final_sentiment_score", "std"),
+        감정강도_평균=("sentiment_intensity_score", "mean"),
+        감정강도_분산=("sentiment_intensity_score", "var"),
+        감정강도_표준편차=("sentiment_intensity_score", "std")
+    )
+
+    # 정치 성향별 통계
+    bias_stats = df.groupby("bias").agg(
+        감정점수_평균=("final_sentiment_score", "mean"),
+        감정점수_분산=("final_sentiment_score", "var"),
+        감정점수_표준편차=("final_sentiment_score", "std"),
+        감정강도_평균=("sentiment_intensity_score", "mean"),
+        감정강도_분산=("sentiment_intensity_score", "var"),
+        감정강도_표준편차=("sentiment_intensity_score", "std")
+    )
+
+    return stats, country_stats, bias_stats
+
+def save_statistics_to_csv(df, result_folder, timestamp):
+    """감정 점수 및 감정 강도의 종합 통계를 CSV 파일로 저장"""
+    stats, country_stats, bias_stats = calculate_statistics(df)
+
+    # 파일 경로 설정
+    filepath = os.path.join(result_folder, f"sentiment_statistics_{timestamp}.csv")
+
+    # 데이터 정리
+    with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # 전체 감정 점수 및 감정 강도 통계
+        writer.writerow(["종합 통계"])
+        writer.writerow(["항목", "값"])
+        for key, value in stats.items():
+            writer.writerow([key, value])
+
+        writer.writerow([])  # 빈 줄 추가
+        
+        # 국가별 통계 저장
+        writer.writerow(["국가별 감정 통계"])
+        writer.writerow(["국가", "감정점수_평균", "감정점수_분산", "감정점수_표준편차", 
+                         "감정강도_평균", "감정강도_분산", "감정강도_표준편차"])
+        for country, row in country_stats.iterrows():
+            writer.writerow([country] + row.tolist())
+
+        writer.writerow([])  # 빈 줄 추가
+        
+        # 정치 성향별 통계 저장
+        writer.writerow(["정치 성향별 감정 통계"])
+        writer.writerow(["성향", "감정점수_평균", "감정점수_분산", "감정점수_표준편차", 
+                         "감정강도_평균", "감정강도_분산", "감정강도_표준편차"])
+        for bias, row in bias_stats.iterrows():
+            writer.writerow([bias] + row.tolist())
+
+    print(f"\n📊 감정 분석 종합 통계가 {filepath}에 저장되었습니다.")
+
 def visualize_results(results):
-    """Visualize analysis results and evaluate reliability"""
+    """Z-score를 포함한 감정 분석 결과 시각화"""
     if not results:
         print("No results to visualize.")
         return
-    
-    # Get date-based result folder
+
     result_folder = get_result_folder()
-    
-    # Get current timestamp
     timestamp = get_timestamp()
-    
-    # Create dataframe
+
     df = pd.DataFrame(results)
+    df = calculate_z_scores(df)  # Z-score 변환 적용
     
+    # 감정 점수 및 감정 강도 통계 저장
+    save_statistics_to_csv(df, result_folder, timestamp)
+
     # Add analysis time to title
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     title_suffix = f" (Analysis: {current_time})"
     
-    # 1. Country-based sentiment comparison
+    # 1. 국가별 감정 점수 Z-score 비교
     plt.figure(figsize=(10, 6))
-    country_avg = df.groupby('country')['final_score'].mean().sort_values(ascending=False)
-    country_avg.plot(kind='bar', color='skyblue')
-    plt.title('Average Sentiment Score by Country' + title_suffix)
-    plt.ylabel('Sentiment Score (0-1)')
-    plt.ylim(0, 1)
-    plt.axhline(y=0.5, color='r', linestyle='-', alpha=0.3)  # Neutral line
+    country_avg = df.groupby("country")["final_sentiment_zscore"].mean().sort_values(ascending=False)
+    country_avg.plot(kind="bar", color="skyblue")
+    plt.title("Average Sentiment Z-score by Country" + title_suffix)
+    plt.ylabel("Sentiment Z-score")
+    plt.axhline(y=0, color="r", linestyle="-", alpha=0.3)  # 평균선
     plt.tight_layout()
-    plt.savefig(os.path.join(result_folder, f'country_sentiment_{timestamp}.png'))
+    plt.savefig(os.path.join(result_folder, f"country_sentiment_zscore_{timestamp}.png"))
     
-    # 2. News source sentiment comparison
+    # 2. 신문사별 감정 점수 Z-score 비교
     plt.figure(figsize=(12, 6))
-    source_avg = df.groupby('source')['final_score'].mean().sort_values(ascending=False)
-    source_avg.plot(kind='bar', color='lightgreen')
-    plt.title('Average Sentiment Score by News Source' + title_suffix)
-    plt.ylabel('Sentiment Score (0-1)')
-    plt.ylim(0, 1)
-    plt.axhline(y=0.5, color='r', linestyle='-', alpha=0.3)  # Neutral line
+    source_avg = df.groupby("source")["final_sentiment_zscore"].mean().sort_values(ascending=False)
+    source_avg.plot(kind="bar", color="lightgreen")
+    plt.title("Average Sentiment Z-score by News Source" + title_suffix)
+    plt.ylabel("Sentiment Z-score")
+    plt.axhline(y=0, color="r", linestyle="-", alpha=0.3)  # 평균선
     plt.tight_layout()
-    plt.savefig(os.path.join(result_folder, f'source_sentiment_{timestamp}.png'))
+    plt.savefig(os.path.join(result_folder, f"source_sentiment_zscore_{timestamp}.png"))
     
-    # 3. Political bias sentiment comparison
+    # 3. 정치적 성향별 감정 점수 Z-score 비교
     plt.figure(figsize=(8, 6))
-    bias_avg = df.groupby('bias')['final_score'].mean().sort_values(ascending=False)
+    bias_avg = df.groupby('bias')['final_sentiment_zscore'].mean().sort_values(ascending=False)
     colors = {'liberal': 'blue', 'conservative': 'red', 'neutral': 'gray', 'unknown': 'black'}
     bias_avg.plot(kind='bar', color=[colors.get(x, 'black') for x in bias_avg.index])
-    plt.title('Average Sentiment Score by Political Bias' + title_suffix)
-    plt.ylabel('Sentiment Score (0-1)')
-    plt.ylim(0, 1)
-    plt.axhline(y=0.5, color='r', linestyle='-', alpha=0.3)  # Neutral line
+    plt.title('Average Sentiment Z-score by Political Bias' + title_suffix)
+    plt.ylabel('Sentiment Z-score')
+    plt.axhline(y=0, color='r', linestyle='-', alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join(result_folder, f'bias_sentiment_{timestamp}.png'))
-    
-    # 4. Analysis tool comparison
+    plt.savefig(os.path.join(result_folder, f'bias_sentiment_zscore_{timestamp}.png'))
+
+    # 4. 감정 분석 도구별 감정 점수 Z-score 비교
     plt.figure(figsize=(10, 6))
-    tools = ['vader_score', 'sentistrength_score', 'google_score', 'huggingface_score']
+    tools = ["vader_score_zscore", "google_score_zscore", "huggingface_score_zscore"]
+    tool_labels = ["VADER", "Google NLP", "HuggingFace"]
     tool_avg = df[tools].mean()
-    tool_avg.plot(kind='bar', color='orange')
-    plt.title('Average Sentiment Score by Analysis Tool' + title_suffix)
-    plt.ylabel('Sentiment Score (0-1)')
-    plt.ylim(0, 1)
-    plt.axhline(y=0.5, color='r', linestyle='-', alpha=0.3)  # Neutral line
+    tool_avg.index = tool_labels  # 레이블 변경
+    tool_avg.plot(kind="bar", color="orange")
+    plt.title("Average Sentiment Z-score by Analysis Tool" + title_suffix)
+    plt.ylabel("Sentiment Z-score")
+    plt.axhline(y=0, color="r", linestyle="-", alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join(result_folder, f'tool_sentiment_{timestamp}.png'))
-    
-    print(f"\nVisualization images have been saved to {result_folder} folder.")
-    
-    # Run reliability evaluation
+    plt.savefig(os.path.join(result_folder, f"tool_sentiment_zscore_{timestamp}.png"))
+
+    print(f"\n📊 Z-score 기반 감정 분석 결과 시각화가 완료되었습니다.")
+
+    # 신뢰도 평가 실행
     evaluate_sentiment_reliability(df, result_folder, timestamp)
 
 def save_results_to_csv(results, filename=None):
-    """분석 결과를 CSV 파일로 저장"""
+    """분석 결과를 CSV 파일로 저장하며 Z-score 포함"""
     if not results:
         print("저장할 결과가 없습니다.")
         return
-    
-    # 날짜별 결과 폴더 가져오기
+
     result_folder = get_result_folder()
-    
-    # 파일명에 시간 추가
     timestamp = get_timestamp()
     if filename is None:
         filename = f"news_sentiment_analysis_{timestamp}.csv"
-    
+
     # 결과에 분석 시간 추가
     analysis_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for r in results:
         r['analysis_time'] = analysis_time
-    
-    # 전체 파일 경로
-    filepath = os.path.join(result_folder, filename)
-    
-    with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-        fieldnames = ['search_keyword', 'title', 'source', 'country', 'bias', 'final_score', 
-                     'vader_score', 'sentistrength_score', 'google_score', 'huggingface_score',
-                     'sentiment', 'url', 'analysis_time']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         
-        writer.writeheader()
-        for result in results:
-            writer.writerow(result)
-    
-    print(f"\n분석 결과가 {filepath}에 저장되었습니다.")
+    df = pd.DataFrame(results)
+    df = calculate_z_scores(df)  # Z-score 적용
+
+    filepath = os.path.join(result_folder, filename)
+    df.to_csv(filepath, index=False, encoding="utf-8")
+
+    print(f"\n📊 분석 결과가 {filepath}에 저장되었습니다.")
 
 # 메인 함수
 def main():
